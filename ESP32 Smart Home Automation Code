@@ -1,0 +1,282 @@
+/*
+ * ESP32 Smart Home Automation System
+ * Features: Remote control, sensor automation, web server
+ * Author: IoT Project
+ */
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include <DHT.h>
+
+// WiFi Credentials
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// Pin Definitions
+#define LIGHT1_PIN 12
+#define LIGHT2_PIN 13
+#define FAN_PIN 14
+#define OUTLET_PIN 27
+
+#define DHT_PIN 15
+#define DHT_TYPE DHT22
+#define MOTION_PIN 25
+#define LDR_PIN 34  // Analog pin
+
+// Device States
+bool light1State = false;
+bool light2State = false;
+bool fanState = false;
+bool outletState = false;
+
+// Sensor Data
+float temperature = 0;
+float humidity = 0;
+bool motionDetected = false;
+int lightLevel = 0;
+
+// Automation Settings
+bool motionLightEnabled = true;
+bool tempFanEnabled = true;
+float tempThreshold = 28.0;
+unsigned long lastMotionTime = 0;
+const unsigned long motionDelay = 60000; // 1 minute
+
+// Objects
+DHT dht(DHT_PIN, DHT_TYPE);
+WebServer server(80);
+
+// Function Prototypes
+void handleRoot();
+void handleControl();
+void handleStatus();
+void handleSensors();
+void handleAutomation();
+void readSensors();
+void checkAutomation();
+void controlDevice(int pin, bool state);
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Initialize Pins
+  pinMode(LIGHT1_PIN, OUTPUT);
+  pinMode(LIGHT2_PIN, OUTPUT);
+  pinMode(FAN_PIN, OUTPUT);
+  pinMode(OUTLET_PIN, OUTPUT);
+  pinMode(MOTION_PIN, INPUT);
+  pinMode(LDR_PIN, INPUT);
+  
+  // Set initial states
+  digitalWrite(LIGHT1_PIN, LOW);
+  digitalWrite(LIGHT2_PIN, LOW);
+  digitalWrite(FAN_PIN, LOW);
+  digitalWrite(OUTLET_PIN, LOW);
+  
+  // Initialize DHT sensor
+  dht.begin();
+  
+  // Connect to WiFi
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("\nWiFi connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+  
+  // Setup Web Server Routes
+  server.on("/", handleRoot);
+  server.on("/control", handleControl);
+  server.on("/status", handleStatus);
+  server.on("/sensors", handleSensors);
+  server.on("/automation", handleAutomation);
+  
+  server.enableCORS();
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
+void loop() {
+  server.handleClient();
+  
+  // Read sensors every 2 seconds
+  static unsigned long lastSensorRead = 0;
+  if (millis() - lastSensorRead > 2000) {
+    readSensors();
+    lastSensorRead = millis();
+  }
+  
+  // Check automation rules
+  checkAutomation();
+  
+  delay(10);
+}
+
+void readSensors() {
+  // Read DHT22 sensor
+  temperature = dht.readTemperature();
+  humidity = dht.readHumidity();
+  
+  // Read motion sensor
+  motionDetected = digitalRead(MOTION_PIN);
+  if (motionDetected) {
+    lastMotionTime = millis();
+  }
+  
+  // Read light sensor (LDR)
+  lightLevel = analogRead(LDR_PIN);
+  lightLevel = map(lightLevel, 0, 4095, 0, 1000);
+  
+  // Debug output
+  Serial.print("Temp: ");
+  Serial.print(temperature);
+  Serial.print("°C | Humidity: ");
+  Serial.print(humidity);
+  Serial.print("% | Motion: ");
+  Serial.print(motionDetected);
+  Serial.print(" | Light: ");
+  Serial.println(lightLevel);
+}
+
+void checkAutomation() {
+  // Motion-based lighting
+  if (motionLightEnabled && motionDetected && !light1State) {
+    light1State = true;
+    controlDevice(LIGHT1_PIN, true);
+    Serial.println("AUTO: Motion detected - Light 1 ON");
+  }
+  
+  // Turn off light after delay when no motion
+  if (motionLightEnabled && light1State && 
+      (millis() - lastMotionTime > motionDelay)) {
+    light1State = false;
+    controlDevice(LIGHT1_PIN, false);
+    Serial.println("AUTO: No motion - Light 1 OFF");
+  }
+  
+  // Temperature-based fan control
+  if (tempFanEnabled) {
+    if (temperature > tempThreshold && !fanState) {
+      fanState = true;
+      controlDevice(FAN_PIN, true);
+      Serial.println("AUTO: High temp - Fan ON");
+    } else if (temperature < (tempThreshold - 2) && fanState) {
+      fanState = false;
+      controlDevice(FAN_PIN, false);
+      Serial.println("AUTO: Normal temp - Fan OFF");
+    }
+  }
+}
+
+void controlDevice(int pin, bool state) {
+  digitalWrite(pin, state ? HIGH : LOW);
+}
+
+void handleRoot() {
+  String html = "<!DOCTYPE html><html><head><title>Smart Home</title>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+  html += "<style>body{font-family:Arial;text-align:center;margin:20px;}";
+  html += ".btn{padding:10px 20px;margin:10px;font-size:18px;cursor:pointer;}";
+  html += ".on{background-color:#4CAF50;color:white;}";
+  html += ".off{background-color:#f44336;color:white;}</style></head>";
+  html += "<body><h1>Smart Home Control</h1>";
+  html += "<p>ESP32 IP: " + WiFi.localIP().toString() + "</p>";
+  html += "<h2>Devices</h2>";
+  html += "<button class='btn " + String(light1State ? "on" : "off") + "' onclick='toggle(\"light1\")'>Light 1</button>";
+  html += "<button class='btn " + String(light2State ? "on" : "off") + "' onclick='toggle(\"light2\")'>Light 2</button>";
+  html += "<button class='btn " + String(fanState ? "on" : "off") + "' onclick='toggle(\"fan\")'>Fan</button>";
+  html += "<button class='btn " + String(outletState ? "on" : "off") + "' onclick='toggle(\"outlet\")'>Outlet</button>";
+  html += "<h2>Sensors</h2>";
+  html += "<p>Temperature: " + String(temperature) + " °C</p>";
+  html += "<p>Humidity: " + String(humidity) + " %</p>";
+  html += "<p>Motion: " + String(motionDetected ? "Detected" : "None") + "</p>";
+  html += "<p>Light Level: " + String(lightLevel) + " lux</p>";
+  html += "<script>function toggle(device){fetch('/control?device='+device).then(()=>location.reload());}</script>";
+  html += "</body></html>";
+  
+  server.send(200, "text/html", html);
+}
+
+void handleControl() {
+  if (server.hasArg("device")) {
+    String device = server.arg("device");
+    bool newState = true;
+    
+    if (server.hasArg("state")) {
+      newState = server.arg("state") == "1";
+    } else {
+      // Toggle if no state provided
+      if (device == "light1") newState = !light1State;
+      else if (device == "light2") newState = !light2State;
+      else if (device == "fan") newState = !fanState;
+      else if (device == "outlet") newState = !outletState;
+    }
+    
+    // Update device state
+    if (device == "light1") {
+      light1State = newState;
+      controlDevice(LIGHT1_PIN, newState);
+    } else if (device == "light2") {
+      light2State = newState;
+      controlDevice(LIGHT2_PIN, newState);
+    } else if (device == "fan") {
+      fanState = newState;
+      controlDevice(FAN_PIN, newState);
+    } else if (device == "outlet") {
+      outletState = newState;
+      controlDevice(OUTLET_PIN, newState);
+    }
+    
+    Serial.println("Control: " + device + " -> " + String(newState ? "ON" : "OFF"));
+    server.send(200, "text/plain", "OK");
+  } else {
+    server.send(400, "text/plain", "Bad Request");
+  }
+}
+
+void handleStatus() {
+  String json = "{";
+  json += "\"light1\":" + String(light1State ? "true" : "false") + ",";
+  json += "\"light2\":" + String(light2State ? "true" : "false") + ",";
+  json += "\"fan\":" + String(fanState ? "true" : "false") + ",";
+  json += "\"outlet\":" + String(outletState ? "true" : "false");
+  json += "}";
+  
+  server.send(200, "application/json", json);
+}
+
+void handleSensors() {
+  String json = "{";
+  json += "\"temperature\":" + String(temperature) + ",";
+  json += "\"humidity\":" + String(humidity) + ",";
+  json += "\"motion\":" + String(motionDetected ? "true" : "false") + ",";
+  json += "\"light\":" + String(lightLevel);
+  json += "}";
+  
+  server.send(200, "application/json", json);
+}
+
+void handleAutomation() {
+  if (server.hasArg("motionLight")) {
+    motionLightEnabled = server.arg("motionLight") == "1";
+  }
+  if (server.hasArg("tempFan")) {
+    tempFanEnabled = server.arg("tempFan") == "1";
+  }
+  if (server.hasArg("tempThreshold")) {
+    tempThreshold = server.arg("tempThreshold").toFloat();
+  }
+  
+  String json = "{";
+  json += "\"motionLight\":" + String(motionLightEnabled ? "true" : "false") + ",";
+  json += "\"tempFan\":" + String(tempFanEnabled ? "true" : "false") + ",";
+  json += "\"tempThreshold\":" + String(tempThreshold);
+  json += "}";
+  
+  server.send(200, "application/json", json);
+}
